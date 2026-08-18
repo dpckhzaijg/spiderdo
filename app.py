@@ -3,11 +3,45 @@ import os
 import subprocess
 import uuid as uuid_lib
 import time
-from flask import Flask, request, render_template_string, make_response, redirect
+from flask import Flask, request, render_template_string, make_response, redirect, session
 
 app = Flask(__name__)
+app.secret_key = os.urandom(24)  # برای سشن
+
 CONFIG_PATH = "/usr/local/etc/xray/config.json"
 LOG_FILE = "/tmp/xray_status.log"
+PASSWORD_FILE = "/app/password.txt"
+
+# ========== توابع مدیریت رمز ==========
+
+def get_password():
+    """دریافت رمز از فایل، اگر نبود admin رو پیش‌فرض بگیر"""
+    try:
+        with open(PASSWORD_FILE, 'r') as f:
+            return f.read().strip()
+    except:
+        # اگر فایل نبود، رمز پیش‌فرض رو بساز
+        set_password("admin")
+        return "admin"
+
+def set_password(new_password):
+    """ذخیره رمز جدید در فایل"""
+    with open(PASSWORD_FILE, 'w') as f:
+        f.write(new_password.strip())
+
+def check_auth():
+    """بررسی لاگین بودن کاربر"""
+    return session.get('logged_in', False)
+
+def login_required(f):
+    """دکوریتور برای محافظت از صفحات"""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not check_auth():
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
 
 # ========== دیکشنری ترجمه ==========
 TRANSLATIONS = {
@@ -32,12 +66,24 @@ TRANSLATIONS = {
         "copied_msg": "✅ لینک کپی شد!",
         "log_label": "📝 آخرین رویداد",
         "footer": "اسپایدر پک · ساخته شده با ❤️ برای Railway",
-        "change_lang": "تغییر زبان",
         "persian": "فارسی",
         "english": "انگلیسی",
         "no_log": "هیچ رویدادی ثبت نشده",
         "restart_log": "ری‌استارت در",
-        "update_log": "بروزرسانی شد! مسیر: {path}، پورت: {port}"
+        "update_log": "بروزرسانی شد! مسیر: {path}، پورت: {port}",
+        # بخش لاگین
+        "login_title": "🔐 ورود به پنل",
+        "password_label": "رمز عبور",
+        "login_btn": "ورود",
+        "wrong_password": "❌ رمز عبور اشتباه است!",
+        "logout_btn": "🚪 خروج",
+        "settings_title": "⚙️ تنظیمات پنل",
+        "new_password_label": "رمز عبور جدید",
+        "confirm_password_label": "تکرار رمز عبور",
+        "change_password_btn": "تغییر رمز",
+        "password_changed": "✅ رمز عبور با موفقیت تغییر کرد!",
+        "password_mismatch": "❌ رمزها مطابقت ندارند!",
+        "back_to_panel": "← بازگشت به پنل"
     },
     "en": {
         "title": "🕸️ Spider Pack Panel",
@@ -60,12 +106,24 @@ TRANSLATIONS = {
         "copied_msg": "✅ Link copied!",
         "log_label": "📝 Last Event",
         "footer": "Spider Pack · Made with ❤️ for Railway",
-        "change_lang": "Change Language",
         "persian": "Persian",
         "english": "English",
         "no_log": "No events recorded",
         "restart_log": "Restarted at",
-        "update_log": "Updated! Path: {path}, Port: {port}"
+        "update_log": "Updated! Path: {path}, Port: {port}",
+        # Login section
+        "login_title": "🔐 Login to Panel",
+        "password_label": "Password",
+        "login_btn": "Login",
+        "wrong_password": "❌ Wrong password!",
+        "logout_btn": "🚪 Logout",
+        "settings_title": "⚙️ Panel Settings",
+        "new_password_label": "New Password",
+        "confirm_password_label": "Confirm Password",
+        "change_password_btn": "Change Password",
+        "password_changed": "✅ Password changed successfully!",
+        "password_mismatch": "❌ Passwords do not match!",
+        "back_to_panel": "← Back to Panel"
     }
 }
 
@@ -81,9 +139,146 @@ def get_text(key, **kwargs):
         text = text.format(**kwargs)
     return text
 
-# ========== قالب HTML ==========
+# ========== قالب صفحه لاگین ==========
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ text('login_title') }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+            direction: {{ 'rtl' if lang == 'fa' else 'ltr' }};
+        }
+        .card {
+            max-width: 400px;
+            width: 100%;
+            background: #1e293b;
+            border-radius: 24px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            border: 1px solid #334155;
+        }
+        h1 {
+            font-size: 28px;
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #3b82f6;
+            padding-bottom: 15px;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        label {
+            font-size: 14px;
+            color: #cbd5e1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        input {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: #f1f5f9;
+            font-size: 15px;
+            transition: 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.3);
+        }
+        .btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 40px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn:hover { background: #2563eb; transform: scale(1.02); }
+        .error {
+            background: #7f1d1d;
+            color: #fca5a5;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            text-align: center;
+        }
+        .lang-switcher {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 20px;
+        }
+        .lang-btn {
+            background: #334155;
+            color: #94a3b8;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: 0.2s;
+            text-decoration: none;
+        }
+        .lang-btn.active {
+            background: #3b82f6;
+            color: white;
+        }
+        .lang-btn:hover { opacity: 0.8; }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            color: #64748b;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>🔐 {{ text('login_title') }}</h1>
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+        <label>
+            {{ text('password_label') }}
+            <input type="password" name="password" placeholder="••••••••" required>
+        </label>
+        <button type="submit" class="btn">{{ text('login_btn') }}</button>
+    </form>
+    <div class="lang-switcher">
+        <a href="/set_lang/fa?next=/login" class="lang-btn {{ 'active' if lang == 'fa' else '' }}">{{ text('persian') }}</a>
+        <a href="/set_lang/en?next=/login" class="lang-btn {{ 'active' if lang == 'en' else '' }}">{{ text('english') }}</a>
+    </div>
+    <div class="footer">
+        {{ text('footer') }}
+    </div>
+</div>
+</body>
+</html>
+"""
 
-HTML_TEMPLATE = """
+# ========== قالب پنل اصلی (با دکمه خروج و تنظیمات) ==========
+PANEL_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="{{ lang }}">
 <head>
@@ -132,17 +327,41 @@ HTML_TEMPLATE = """
             color: #94a3b8;
             margin-left: 10px;
         }
-        .lang-switcher {
+        .header-actions {
             display: flex;
             gap: 8px;
+            align-items: center;
         }
-        .lang-btn {
+        .header-actions .btn-sm {
             background: #334155;
             color: #94a3b8;
             border: none;
             padding: 6px 14px;
             border-radius: 30px;
             font-size: 13px;
+            cursor: pointer;
+            transition: 0.2s;
+            text-decoration: none;
+        }
+        .header-actions .btn-sm:hover {
+            background: #475569;
+            color: #e2e8f0;
+        }
+        .header-actions .btn-sm.danger:hover {
+            background: #dc2626;
+            color: white;
+        }
+        .lang-switcher {
+            display: flex;
+            gap: 4px;
+        }
+        .lang-btn {
+            background: #334155;
+            color: #94a3b8;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 30px;
+            font-size: 12px;
             cursor: pointer;
             transition: 0.2s;
             text-decoration: none;
@@ -269,6 +488,7 @@ HTML_TEMPLATE = """
             .card { padding: 20px; }
             .btn-group { flex-direction: column; }
             .header { flex-direction: column; gap: 10px; align-items: stretch; }
+            .header-actions { justify-content: center; }
             .lang-switcher { justify-content: center; }
         }
     </style>
@@ -280,9 +500,13 @@ HTML_TEMPLATE = """
             🕸️ {{ text('title') }}
             <small>{{ text('version') }}</small>
         </h1>
-        <div class="lang-switcher">
-            <a href="/set_lang/fa" class="lang-btn {{ 'active' if lang == 'fa' else '' }}">{{ text('persian') }}</a>
-            <a href="/set_lang/en" class="lang-btn {{ 'active' if lang == 'en' else '' }}">{{ text('english') }}</a>
+        <div class="header-actions">
+            <a href="/settings" class="btn-sm">⚙️</a>
+            <a href="/logout" class="btn-sm danger">🚪</a>
+            <div class="lang-switcher">
+                <a href="/set_lang/fa?next=/" class="lang-btn {{ 'active' if lang == 'fa' else '' }}">{{ text('persian') }}</a>
+                <a href="/set_lang/en?next=/" class="lang-btn {{ 'active' if lang == 'en' else '' }}">{{ text('english') }}</a>
+            </div>
         </div>
     </div>
 
@@ -363,7 +587,143 @@ function copyLink() {
 </html>
 """
 
-# ========== توابع مدیریت ==========
+# ========== قالب صفحه تنظیمات ==========
+SETTINGS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ text('settings_title') }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+            direction: {{ 'rtl' if lang == 'fa' else 'ltr' }};
+        }
+        .card {
+            max-width: 500px;
+            width: 100%;
+            background: #1e293b;
+            border-radius: 24px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            border: 1px solid #334155;
+        }
+        h1 {
+            font-size: 28px;
+            text-align: center;
+            border-bottom: 2px solid #3b82f6;
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+        }
+        .back-link {
+            display: inline-block;
+            color: #94a3b8;
+            text-decoration: none;
+            margin-bottom: 20px;
+            transition: 0.2s;
+        }
+        .back-link:hover { color: #e2e8f0; }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        label {
+            font-size: 14px;
+            color: #cbd5e1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        input {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: #f1f5f9;
+            font-size: 15px;
+            transition: 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.3);
+        }
+        .btn {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 40px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn:hover { background: #2563eb; transform: scale(1.02); }
+        .success {
+            background: #064e3b;
+            color: #6ee7b7;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            text-align: center;
+        }
+        .error {
+            background: #7f1d1d;
+            color: #fca5a5;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            text-align: center;
+        }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            color: #64748b;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<div class="card">
+    <a href="/" class="back-link">← {{ text('back_to_panel') }}</a>
+    <h1>⚙️ {{ text('settings_title') }}</h1>
+    {% if success %}
+        <div class="success">{{ success }}</div>
+    {% endif %}
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+    <form method="POST">
+        <label>
+            {{ text('new_password_label') }}
+            <input type="password" name="new_password" placeholder="••••••••" required>
+        </label>
+        <label>
+            {{ text('confirm_password_label') }}
+            <input type="password" name="confirm_password" placeholder="••••••••" required>
+        </label>
+        <button type="submit" class="btn">{{ text('change_password_btn') }}</button>
+    </form>
+    <div class="footer">
+        {{ text('footer') }}
+    </div>
+</div>
+</body>
+</html>
+"""
+
+# ========== توابع مدیریت Xray ==========
 
 def get_domain():
     domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL") or "your-domain.up.railway.app"
@@ -425,7 +785,28 @@ def get_log():
 
 # ========== مسیرها ==========
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    lang = get_lang()
+    error = None
+    
+    if request.method == 'POST':
+        password = request.form.get('password', '').strip()
+        if password == get_password():
+            session['logged_in'] = True
+            return redirect('/')
+        else:
+            error = get_text('wrong_password')
+    
+    return render_template_string(LOGIN_TEMPLATE, lang=lang, text=get_text, error=error)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect('/login')
+
 @app.route('/', methods=['GET', 'POST'])
+@login_required
 def index():
     lang = get_lang()
     domain = get_domain()
@@ -472,13 +853,10 @@ def index():
     status = check_status()
     clients_count = get_clients_count()
 
-    def text(key, **kwargs):
-        return get_text(key, **kwargs)
-
     return render_template_string(
-        HTML_TEMPLATE,
+        PANEL_TEMPLATE,
         lang=lang,
-        text=text,
+        text=get_text,
         domain=domain,
         uuid=current_uuid,
         path=current_path,
@@ -489,26 +867,57 @@ def index():
     )
 
 @app.route('/restart', methods=['POST'])
+@login_required
 def restart_only():
     restart_xray()
     return index()
 
 @app.route('/reset', methods=['POST'])
+@login_required
 def reset_all():
     write_config(str(uuid_lib.uuid4()), "/spider", 10086)
     restart_xray()
     return index()
 
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    lang = get_lang()
+    success = None
+    error = None
+    
+    if request.method == 'POST':
+        new_pass = request.form.get('new_password', '').strip()
+        confirm_pass = request.form.get('confirm_password', '').strip()
+        
+        if not new_pass or len(new_pass) < 4:
+            error = "رمز عبور باید حداقل ۴ کاراکتر باشد."
+        elif new_pass != confirm_pass:
+            error = get_text('password_mismatch')
+        else:
+            set_password(new_pass)
+            success = get_text('password_changed')
+    
+    return render_template_string(SETTINGS_TEMPLATE, lang=lang, text=get_text, success=success, error=error)
+
 @app.route('/set_lang/<lang>')
 def set_lang(lang):
     if lang not in ['fa', 'en']:
         lang = 'fa'
-    resp = make_response(redirect('/'))
+    next_url = request.args.get('next', '/')
+    resp = make_response(redirect(next_url))
     resp.set_cookie('lang', lang, max_age=60*60*24*30)
     return resp
 
+# ========== اجرای اولیه ==========
+
 if __name__ == '__main__':
+    # اطمینان از وجود رمز پیش‌فرض
+    if not os.path.exists(PASSWORD_FILE):
+        set_password("admin")
+    
     if not read_config():
         write_config(str(uuid_lib.uuid4()), "/spider", 10086)
         restart_xray()
+    
     app.run(host='127.0.0.1', port=5000)
